@@ -1,3 +1,4 @@
+import os
 import json
 from pymongo import MongoClient
 from google.oauth2.service_account import Credentials
@@ -7,10 +8,12 @@ import pytz
 
 # --- Google Sheets setup ---
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-SERVICE_ACCOUNT_FILE = 'credentials.json'
 
-credentials = Credentials.from_service_account_file(
-    SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+# Load from environment variable
+credentials = Credentials.from_service_account_info(
+    json.loads(os.environ["GOOGLE_CREDENTIALS"]),
+    scopes=SCOPES
+)
 
 SPREADSHEET_ID = '1HICF46gBeg5RFLJvqGBXx9qXmN869xEh-GdIUhsdsz4'
 
@@ -18,7 +21,9 @@ service = build('sheets', 'v4', credentials=credentials)
 sheet_service = service.spreadsheets()
 
 # --- MongoDB setup ---
-mongo_client = MongoClient("mongodb+srv://bmtechx:H5QMb3PptJPEomGx@cluster0.upld5qc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+mongo_client = MongoClient(
+    "mongodb+srv://bmtechx:H5QMb3PptJPEomGx@cluster0.upld5qc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+)
 db = mongo_client['test']
 
 branch_collections = {
