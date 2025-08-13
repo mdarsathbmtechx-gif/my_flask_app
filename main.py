@@ -49,6 +49,8 @@ def detect_branch_from_message(msg: str) -> str:
         return "Static_Leads"
     elif re.search(r'digital marketing', msg_lower):
         return "Digital_Marketing_4999"
+    elif re.search(r'fsd', msg_lower) or re.search(r'full stack', msg_lower):
+        return "FSD_9999"   # ✅ new condition
     else:
         return "Unknown_Leads"
 
