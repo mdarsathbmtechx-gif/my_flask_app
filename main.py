@@ -110,11 +110,11 @@ def extract_message(msg_payload):
         return "\n---\n".join(str(m) for m in msg_payload)
     # If it's a simple string, return it directly
     return str(msg_payload)
-
 def append_or_add_message(phone: str, new_msg: str, retries=3):
     """
     Appends a new message to an existing document or creates a new one
     in the appropriate collection. Includes retry logic for robustness.
+    Also triggers immediate Google Sheets update.
     """
     now_ist = datetime.now(pytz.timezone('Asia/Kolkata'))
     detected_branch = detect_branch_with_memory(phone, new_msg)
@@ -143,7 +143,15 @@ def append_or_add_message(phone: str, new_msg: str, retries=3):
             else:
                 print(f"✅ Updated '{detected_branch}' for phone: {phone}")
 
-            break # Exit the retry loop on success
+            # ✅ Immediately update the relevant sheet tab
+            try:
+                rows = fetch_data_from_mongo(detected_branch)
+                write_to_sheet(detected_branch, rows)
+                print(f"📤 Google Sheet '{detected_branch}' updated immediately.")
+            except Exception as sheet_err:
+                print(f"⚠️ Error updating Google Sheet immediately: {sheet_err}")
+
+            break  # Exit the retry loop on success
         except PyMongoError as e:
             print(f"❌ MongoDB error in '{detected_branch}' (Attempt {attempt}/{retries}): {e}")
             if attempt == retries:
