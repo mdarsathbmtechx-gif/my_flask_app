@@ -7,6 +7,16 @@ import json
 import pytz
 import os
 import re
+import requests
+
+def update_sheet(branch):
+    SHEETS_SERVICE_URL = "https://sheets-service.onrender.com"  # your Render URL for Export_Sheets_Flask
+    try:
+        resp = requests.post(f"{SHEETS_SERVICE_URL}/update/{branch}", timeout=10)
+        print("Sheet update response:", resp.json())
+    except Exception as e:
+        print("Failed to update sheet:", e)
+
 
 app = Flask(__name__)
 
@@ -140,10 +150,8 @@ def append_or_add_message(phone: str, new_msg: str, retries=3):
             else:
                 print(f"✅ Updated '{detected_branch}' for phone: {phone}")
 
-            # ✅ Trigger Google Sheets update immediately
-            rows = fetch_data_from_mongo(detected_branch)
-            print(f"📤 Sending {len(rows)} rows to Google Sheet '{detected_branch}'")
-            write_to_sheet(detected_branch, rows)
+          # ✅ Trigger Google Sheets update immediately via API
+update_sheet(detected_branch)
 
             break
         except PyMongoError as e:
