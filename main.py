@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError, ConnectionFailure
 from datetime import datetime
+from exports_sheets import fetch_data_from_mongo, write_to_sheet
 import json
 import pytz
 import os
@@ -113,11 +114,6 @@ def extract_message(msg_payload):
     # If it's a simple string, return it directly
     return str(msg_payload)
 def append_or_add_message(phone: str, new_msg: str, retries=3):
-    """
-    Appends a new message to an existing document or creates a new one
-    in the appropriate collection. Includes retry logic for robustness.
-    Also triggers immediate Google Sheets update.
-    """
     now_ist = datetime.now(pytz.timezone('Asia/Kolkata'))
     detected_branch = detect_branch_with_memory(phone, new_msg)
 
@@ -129,7 +125,6 @@ def append_or_add_message(phone: str, new_msg: str, retries=3):
 
     for attempt in range(1, retries + 1):
         try:
-            # Find and update the document in one atomic operation for safety
             result = collection.update_one(
                 {"phone": phone},
                 {
@@ -139,21 +134,18 @@ def append_or_add_message(phone: str, new_msg: str, retries=3):
                 },
                 upsert=True
             )
-            
+
             if result.upserted_id:
                 print(f"📌 Created new doc in '{detected_branch}' for phone: {phone}")
             else:
                 print(f"✅ Updated '{detected_branch}' for phone: {phone}")
 
-            # ✅ Immediately update the relevant sheet tab
-            try:
-                rows = fetch_data_from_mongo(detected_branch)
-                write_to_sheet(detected_branch, rows)
-                print(f"📤 Google Sheet '{detected_branch}' updated immediately.")
-            except Exception as sheet_err:
-                print(f"⚠️ Error updating Google Sheet immediately: {sheet_err}")
+            # ✅ Trigger Google Sheets update immediately
+            rows = fetch_data_from_mongo(detected_branch)
+            print(f"📤 Sending {len(rows)} rows to Google Sheet '{detected_branch}'")
+            write_to_sheet(detected_branch, rows)
 
-            break  # Exit the retry loop on success
+            break
         except PyMongoError as e:
             print(f"❌ MongoDB error in '{detected_branch}' (Attempt {attempt}/{retries}): {e}")
             if attempt == retries:
