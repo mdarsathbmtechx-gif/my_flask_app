@@ -50,6 +50,8 @@ def detect_branch_from_message(msg: str) -> str:
         return "E-Commerce_website_Leads"
     elif re.search(r'3999 website', msg_lower):
         return "Static_Leads"
+    elif re.search(r'Hello Need info about Digital Marketing', msg_lower):
+        return "Digital_Marketing_4999"    
     else:
         return "Unknown_Leads"
 
