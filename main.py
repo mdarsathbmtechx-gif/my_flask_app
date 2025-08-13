@@ -1,212 +1,116 @@
-from flask import Flask, request, jsonify
-from pymongo import MongoClient
-from pymongo.errors import PyMongoError, ConnectionFailure
-from datetime import datetime
-from exports_sheets import fetch_data_from_mongo, write_to_sheet
-import json
-import pytz
 import os
-import re
-import requests
+import json
+from pymongo import MongoClient
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+import pytz
+import time
+import threading
+from flask import Flask, jsonify
 
-def update_sheet(branch):
-    SHEETS_SERVICE_URL = "https://sheets-service.onrender.com"  # your Render URL for Export_Sheets_Flask
+# --- Google Sheets setup ---
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+
+# Load credentials from env var or local file (for local testing)
+if "GOOGLE_CREDENTIALS" in os.environ:
+    credentials = Credentials.from_service_account_info(
+        json.loads(os.environ["GOOGLE_CREDENTIALS"]),
+        scopes=SCOPES
+    )
+else:
+    credentials = Credentials.from_service_account_file('credentials.json', scopes=SCOPES)
+
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1HICF46gBeg5RFLJvqGBXx9qXmN869xEh-GdIUhsdsz4")
+
+service = build('sheets', 'v4', credentials=credentials)
+sheet_service = service.spreadsheets()
+
+# --- MongoDB setup ---
+mongo_uri = os.environ.get(
+    "MONGO_URI",
+    "mongodb+srv://bmtechx:H5QMb3PptJPEomGx@cluster0.upld5qc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+)
+mongo_client = MongoClient(mongo_uri)
+db = mongo_client['test']
+
+branch_collections = {
+    "E-Commerce_website_Leads": "E-Commerce_website_Leads",
+    "Static_Leads": "Static_Leads",
+    "Digital_Marketing_4999": "Digital_Marketing_4999",
+    "FSD_9999": "FSD_9999",
+    "Unknown_Leads": "Unknown_Leads"
+}
+
+def fetch_data_from_mongo(collection_name):
+    collection = db[collection_name]
+    rows = []
+    for doc in collection.find():
+        phone = doc.get('phone', '')
+        branch_name = collection_name
+        messages = doc.get('messages', [])
+        for m in messages:
+            text = m.get('text', '')
+            time_obj = m.get('time')
+            if time_obj:
+                if time_obj.tzinfo is None:
+                    time_obj = time_obj.replace(tzinfo=pytz.UTC)
+                time_local = time_obj.astimezone(pytz.timezone('Asia/Kolkata'))
+                time_str = time_local.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                time_str = ''
+            rows.append([time_str, phone, text, branch_name])
+    return rows
+
+def write_to_sheet(sheet_name, rows):
+    headers = ['Timestamp', 'Phone', 'Message', 'Branch']
+    data = [headers] + rows
     try:
-        resp = requests.post(f"{SHEETS_SERVICE_URL}/update/{branch}", timeout=10)
-        print("Sheet update response:", resp.json())
+        sheet_service.values().clear(spreadsheetId=SPREADSHEET_ID, range=sheet_name).execute()
+        sheet_service.values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=sheet_name,
+            valueInputOption='RAW',
+            body={'values': data}
+        ).execute()
+        print(f"✅ Updated sheet '{sheet_name}' with {len(rows)} rows")
     except Exception as e:
-        print("Failed to update sheet:", e)
+        print(f"❌ Error updating sheet '{sheet_name}': {e}")
 
+def sync_loop():
+    while True:
+        for branch, collection_name in branch_collections.items():
+            try:
+                print(f"📥 Fetching from '{collection_name}'...")
+                rows = fetch_data_from_mongo(collection_name)
+                print(f"📤 Writing to sheet '{branch}'...")
+                write_to_sheet(branch, rows)
+            except Exception as e:
+                print(f"⚠ Error processing '{collection_name}': {e}")
 
+        print("⏳ Sync complete! Waiting 1 minute before next sync...")
+        time.sleep(60)  # 1 minute for testing
+
+# --- Flask web server ---
 app = Flask(__name__)
 
-# --- Configuration ---
-# Use environment variable for security
-MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://bmtechx:H5QMb3PptJPEomGx@cluster0.upld5qc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
-# Use environment variable for port, common on cloud platforms
-PORT = int(os.getenv("PORT", 5000))
+@app.route('/')
+def home():
+    return "Service is running"
 
-# --- MongoDB Connection ---
-def get_mongo_client():
-    """Establishes a connection to MongoDB and returns the client."""
+@app.route('/healthz')
+def healthz():
+    return "OK"
+
+@app.route("/update/<branch>", methods=["POST"])
+def update_branch(branch):
     try:
-        # Set a longer timeout to avoid issues with slow connections
-        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=30000)
-        # The ismaster command is cheap and does not require auth.
-        client.admin.command('ismaster')
-        print("✅ Successfully connected to MongoDB!")
-        return client
-    except ConnectionFailure as e:
-        print(f"❌ Failed to connect to MongoDB: {e}")
-        return None
-
-# Attempt to connect to MongoDB on app startup
-mongo_client = get_mongo_client()
-db = mongo_client["test"] if mongo_client is not None else None
-# Use a separate collection for storing phone number branches
-branch_memory_col = db["branch_memory"] if db is not None else None
-
-# --- Message Processing Logic ---
-
-def detect_branch_from_message(msg: str) -> str:
-    """
-    Detects the branch based on keywords in the message content.
-    """
-    msg_lower = msg.lower().strip()
-    
-    if re.search(r'e-commerce|ecommerce|e commerce', msg_lower):
-        return "E-Commerce_website_Leads"
-    elif re.search(r'3999 website', msg_lower):
-        return "Static_Leads"
-    elif re.search(r'digital marketing', msg_lower):
-        return "Digital_Marketing_4999"
-    elif re.search(r'fsd', msg_lower) or re.search(r'full stack', msg_lower):
-        return "FSD_9999"   # ✅ new condition
-    else:
-        return "Unknown_Leads"
-
-
-def detect_branch_with_memory(phone: str, msg: str) -> str:
-    """
-    Detects the branch using a stored memory for the phone number.
-    
-    This function has been modified to always re-evaluate the branch from
-    the message content, rather than using a stored memory. This ensures that
-    messages with new keywords are routed to the correct collection.
-    """
-    if db is None or branch_memory_col is None:
-        print("MongoDB not available. Using message-based detection only.")
-        return detect_branch_from_message(msg)
-
-    phone_normalized = phone.strip()
-    
-    # --- CHANGE: Always detect the new branch from the message. ---
-    branch = detect_branch_from_message(msg)
-
-    # --- RETAIN: Save or update the branch memory for tracking purposes. ---
-    try:
-        branch_memory_col.update_one(
-            {"phone": phone_normalized},
-            {"$set": {"branch": branch}},
-            upsert=True
-        )
-        print(f"💾 Updated branch to '{branch}' in memory for phone: {phone}")
-    except PyMongoError as e:
-        print(f"❌ MongoDB error saving branch memory: {e}")
-
-    return branch
-
-def extract_message(msg_payload):
-    """
-    Extracts the message text from the Interakt webhook payload,
-    handling various formats including JSON strings.
-    """
-    # If the payload is a string, try to parse it as JSON first
-    if isinstance(msg_payload, str):
-        try:
-            msg_payload = json.loads(msg_payload)
-        except json.JSONDecodeError:
-            # If parsing fails, just treat it as a regular string
-            pass
-
-    # Now, check if the payload is a dictionary or list
-    if isinstance(msg_payload, dict):
-        return (
-            msg_payload.get("button_reply", {}).get("title") or
-            msg_payload.get("list_reply", {}).get("title") or
-            msg_payload.get("message") or
-            msg_payload.get("text") or
-            ""
-        )
-    # Handle list messages by joining them
-    elif isinstance(msg_payload, list):
-        return "\n---\n".join(str(m) for m in msg_payload)
-    # If it's a simple string, return it directly
-    return str(msg_payload)
-def append_or_add_message(phone: str, new_msg: str, retries=3):
-    now_ist = datetime.now(pytz.timezone('Asia/Kolkata'))
-    detected_branch = detect_branch_with_memory(phone, new_msg)
-
-    if db is None:
-        print("MongoDB not available. Skipping Mongo insertion.")
-        return
-
-    collection = db[detected_branch]
-
-    for attempt in range(1, retries + 1):
-        try:
-            result = collection.update_one(
-                {"phone": phone},
-                {
-                    "$push": {"messages": {"text": new_msg, "time": now_ist}},
-                    "$set": {"followup_status": "Pending", "updated_at": now_ist},
-                    "$setOnInsert": {"created_at": now_ist}
-                },
-                upsert=True
-            )
-
-            if result.upserted_id:
-                print(f"📌 Created new doc in '{detected_branch}' for phone: {phone}")
-            else:
-                print(f"✅ Updated '{detected_branch}' for phone: {phone}")
-
-          # ✅ Trigger Google Sheets update immediately via API
-update_sheet(detected_branch)
-
-            break
-        except PyMongoError as e:
-            print(f"❌ MongoDB error in '{detected_branch}' (Attempt {attempt}/{retries}): {e}")
-            if attempt == retries:
-                print(f"Failed to write to '{detected_branch}' after {retries} attempts.")
-
-# --- Flask Webhook Route ---
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    """
-    Endpoint for Interakt to send incoming messages.
-    Parses the payload and saves the message to MongoDB.
-    """
-    data = request.get_json(silent=True)
-    if data is None:
-        print("❌ Received webhook with invalid JSON payload.")
-        return jsonify({"status": "error", "reason": "invalid json"}), 400
-    
-    print("📩 Received webhook JSON:", json.dumps(data, indent=2))
-
-    try:
-        phone_number = None
-        message = None
-        
-        # Check for the correct event type and data structure
-        if data.get("type") == "message_received" and "data" in data:
-            customer = data["data"].get("customer", {})
-            phone_number = customer.get("channel_phone_number") or customer.get("phone_number")
-            
-            message_obj = data["data"].get("message", {})
-            raw_message_payload = message_obj.get("message") or message_obj.get("text")
-            message = extract_message(raw_message_payload)
-
-        print(f"Extracted - Phone: {phone_number}, Message: {message[:100] if message else None}")
-
-        if not phone_number:
-            print("⚠ Missing phone number in payload!")
-            return jsonify({"status": "ignored", "reason": "missing phone"}), 200
-
-        if not message:
-            print("⚠ Missing message content in payload!")
-            return jsonify({"status": "ignored", "reason": "missing message"}), 200
-
-        append_or_add_message(phone_number, message)
-
-        return jsonify({"status": "success"}), 200
-
+        rows = fetch_data_from_mongo(branch)
+        write_to_sheet(branch, rows)
+        return jsonify({"status": "success", "rows_updated": len(rows)})
     except Exception as e:
-        print(f"❌ Error in webhook processing: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 400
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == "__main__":
-    # In a cloud environment, you would typically use a production web server like Gunicorn.
-    # For a simple deployment, you can run this command.
-    # The 'host="0.0.0.0"' makes the app accessible from any public IP, which is required
-    # for a cloud server.
-    app.run(host="0.0.0.0", port=PORT, debug=True, use_reloader=False)
+    threading.Thread(target=sync_loop, daemon=True).start()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
