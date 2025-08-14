@@ -33,11 +33,12 @@ mongo_client = get_mongo_client()
 db = mongo_client["test"] if mongo_client else None
 
 # Use a separate collection for storing phone number branches
-branch_memory_col = db["branch_memory"] if db else None
-
-if db is None:
+if db is not None:
+    branch_memory_col = db["branch_memory"]
+    print("✅ MongoDB connection established. Ready to use collections.")
+else:
+    branch_memory_col = None
     print("⚠ MongoDB connection not established. Database operations will be skipped.")
-
 
 # --- Message Processing Logic ---
 
