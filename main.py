@@ -19,21 +19,25 @@ PORT = int(os.getenv("PORT", 5000))
 def get_mongo_client():
     """Establishes a connection to MongoDB and returns the client."""
     try:
-        # Set a longer timeout to avoid issues with slow connections
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=30000)
-        # The ismaster command is cheap and does not require auth.
-        client.admin.command('ismaster')
+        client.admin.command('ping')  # lightweight check
         print("✅ Successfully connected to MongoDB!")
         return client
     except ConnectionFailure as e:
         print(f"❌ Failed to connect to MongoDB: {e}")
         return None
 
+
 # Attempt to connect to MongoDB on app startup
 mongo_client = get_mongo_client()
-db = mongo_client["test"] if mongo_client is not None else None
+db = mongo_client["test"] if mongo_client else None
+
 # Use a separate collection for storing phone number branches
-branch_memory_col = db["branch_memory"] if db is not None else None
+branch_memory_col = db["branch_memory"] if db else None
+
+if db is None:
+    print("⚠ MongoDB connection not established. Database operations will be skipped.")
+
 
 # --- Message Processing Logic ---
 
