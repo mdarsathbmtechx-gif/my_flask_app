@@ -54,9 +54,9 @@ def detect_branch_from_message(msg: str) -> str:
 def detect_branch_from_message(msg: str) -> str:
     msg_lower = msg.lower().strip()
 
-    if re.search(r'e-commerce|ecommerce|e commerce', msg_lower):
-        return "E-Commerce_website_Leads"
-    elif re.search(r'3999 website', msg_lower):
+    # if re.search(r'e-commerce|ecommerce|e commerce', msg_lower):
+    #     return "E-Commerce_website_Leads"
+    if re.search(r'3999 website', msg_lower):
         return "Static_Leads"
     elif re.search(r'digital marketing', msg_lower):
         return "Digital_Marketing_4999"
